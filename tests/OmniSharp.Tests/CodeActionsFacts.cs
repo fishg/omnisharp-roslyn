@@ -10,6 +10,8 @@ namespace OmniSharp.Tests
 {
     public class CodingActionsFacts
     {
+        OmnisharpWorkspace _workspace;
+        
         [Fact]
         public async Task Can_get_code_actions_from_nrefactory()
         {
@@ -58,9 +60,9 @@ namespace OmniSharp.Tests
                     using MyNamespace2;
                     using MyNamespace3;
                     using MyNamespace4;";
-                
-            var newSource = await RunRefactoring(source, "Sort usings");
-            Assert.Equal(expected, newSource);
+
+            var response = await RunRefactoring(source, "Sort usings");
+            Assert.Equal(expected, response.Text);
         }
 
         [Fact]
@@ -79,47 +81,144 @@ public class c {public c() {Console.Write(1);}}";
                   @"using System;
 
 public class c {public c() {Console.Write(1);}}";
-                
-            var newSource = await RunRefactoring(source, "Remove Unnecessary Usings");
-            Assert.Equal(expected, newSource);
+
+            var response = await RunRefactoring(source, "Remove Unnecessary Usings");
+            Assert.Equal(expected, response.Text);
         }
-        
-        private async Task<string> RunRefactoring(string source, string refactoringName)
+
+        [Fact]
+        public async Task Can_get_ranged_code_action()
+        {
+            var source =
+            @"public class Class1
+              {
+                  public void Whatever()
+                  {
+                      $Console.Write(""should be using System;"");$
+                  }
+              }";
+
+            var refactorings = await FindRefactoringsAsync(source);
+            Assert.Contains("Extract Method", refactorings);
+        }
+
+        [Fact]
+        public async Task Can_extract_method()
+        {
+            var source =
+            @"public class Class1
+              {
+                  public void Whatever()
+                  {
+                      $Console.Write(""should be using System;"");$
+                  }
+              }";
+
+            var expected =
+            @"public class Class1
+              {
+                  public void Whatever()
+    {
+        NewMethod();
+    }
+
+    private static void NewMethod()
+    {
+        Console.Write(""should be using System;"");
+    }
+}";
+
+            var response = await RunRefactoring(source, "Extract Method");
+            Assert.Equal(expected, response.Text);
+        }
+
+        [Fact]
+        public async Task Can_create_a_class_with_a_new_method_in_new_file()
+        {
+            var source =
+                @"namespace MyNamespace
+              public class Class1
+              {
+                  public void Whatever()
+                  {
+                      MyNew$Class.DoSomething();
+                  }
+              }";
+
+            var response = await RunRefactoring(source, "Generate class for 'MyNewClass' in 'MyNamespace' (in new file)", true);
+            var change = response.Changes.First();
+            Assert.Equal("MyNewClass.cs", change.FileName);
+            var expected =
+                @"namespace MyNamespace
+{
+    internal class MyNewClass
+    {
+    }
+}";
+
+            Assert.Equal(expected, change.Changes.First().NewText);
+            source =
+                @"namespace MyNamespace
+              public class Class1
+              {
+                  public void Whatever()
+                  {
+                      MyNewClass.DoS$omething();
+                  }
+              }";
+
+            response = await RunRefactoring(source, "Generate method 'MyNewClass.DoSomething'", true);
+            expected =
+@"        internal static void DoSomething()
+        {
+            throw new NotImplementedException();
+        }
+";
+            change = response.Changes.First();
+            Assert.Equal(expected, change.Changes.First().NewText);
+        }
+
+        private async Task<RunCodeActionResponse> RunRefactoring(string source, string refactoringName, bool wantsChanges = false)
         {
             var refactorings = await FindRefactoringsAsync(source);
             Assert.Contains(refactoringName, refactorings);
             var index = refactorings.ToList().IndexOf(refactoringName);
-            return await RunRefactoringsAsync(source, index);
+            return await RunRefactoringsAsync(source, index, wantsChanges);
         }
 
         private async Task<IEnumerable<string>> FindRefactoringsAsync(string source)
         {
             var request = CreateCodeActionRequest(source);
-            var workspace = TestHelpers.CreateSimpleWorkspace(request.Buffer);
-            var controller = new CodeActionController(workspace, new ICodeActionProvider[] { new RoslynCodeActionProvider(), new NRefactoryCodeActionProvider() });
+            _workspace = _workspace ?? TestHelpers.CreateSimpleWorkspace(request.Buffer);
+            var controller = new CodeActionController(_workspace, new ICodeActionProvider[] { new RoslynCodeActionProvider(), new NRefactoryCodeActionProvider() });
             var response = await controller.GetCodeActions(request);
             return response.CodeActions;
         }
 
-        private async Task<string> RunRefactoringsAsync(string source, int codeActionIndex)
+        private async Task<RunCodeActionResponse> RunRefactoringsAsync(string source, int codeActionIndex, bool wantsChanges = false)
         {
-            var request = CreateCodeActionRequest(source, codeActionIndex);
-            var workspace = TestHelpers.CreateSimpleWorkspace(request.Buffer);
-            var controller = new CodeActionController(workspace, new ICodeActionProvider[] { new RoslynCodeActionProvider(), new NRefactoryCodeActionProvider() });
+            var request = CreateCodeActionRequest(source, codeActionIndex, wantsChanges: wantsChanges);
+            _workspace = _workspace ?? TestHelpers.CreateSimpleWorkspace(request.Buffer);
+            var controller = new CodeActionController(_workspace, new ICodeActionProvider[] { new RoslynCodeActionProvider(), new NRefactoryCodeActionProvider() });
             var response = await controller.RunCodeAction(request);
-            return response.Text;
+            return response;
         }
 
-        private CodeActionRequest CreateCodeActionRequest(string source, int codeActionIndex = 0, string fileName = "dummy.cs")
+        private CodeActionRequest CreateCodeActionRequest(string source, int codeActionIndex = 0, string fileName = "dummy.cs", bool wantsChanges = false)
         {
-            var lineColumn = TestHelpers.GetLineAndColumnFromDollar(source);
+            var range = TestHelpers.GetRangeFromDollars(source);
             return new CodeActionRequest
             {
-                Line = lineColumn.Line,
-                Column = lineColumn.Column,
+                Line = range.Start.Line,
+                Column = range.Start.Column,
+                SelectionStartColumn = range.Start.Column,
+                SelectionStartLine = range.Start.Line,
+                SelectionEndColumn = range.End.Column,
+                SelectionEndLine = range.End.Line,
                 FileName = fileName,
                 Buffer = source.Replace("$", ""),
-                CodeAction = codeActionIndex
+                CodeAction = codeActionIndex,
+                WantsTextChanges = wantsChanges
             };
         }
     }
