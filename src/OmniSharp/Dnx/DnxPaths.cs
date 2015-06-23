@@ -132,10 +132,10 @@ namespace OmniSharp.Dnx
             {
                 // Newer path
                 yield return Path.Combine(home, ".dnx");
-    
+
                 // New path
                 yield return Path.Combine(home, ".k");
-    
+
                 // Old path
                 yield return Path.Combine(home, ".kre");
             }
